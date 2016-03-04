@@ -6,11 +6,7 @@ import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
 import java.rmi.server.UnicastRemoteObject;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.LinkedBlockingQueue;
-
 
 public class NodeImplementation extends UnicastRemoteObject implements NodeInterface {
 	private static final long serialVersionUID = 1L;
@@ -18,7 +14,10 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 	private int expectedNetworkSize;
 	private Registry registry;
 	int nodesJoined;
-	
+	int roundNumber;
+	int id;
+	boolean stillAlive = true;
+
 	protected NodeImplementation(int registryPort, int nodePort, int expectedNetworkSize) throws RemoteException {
 		super();
 		this.nodePort = nodePort;
@@ -31,12 +30,12 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 			System.out.println("Daboom: " + e);
 		}
 	}
-	
+
 	// Notify other nodes that you have joined the network.
-	public void notifyOthers() {		
-		try
-		{
-			// Inform the other nodes that you have joined the network by calling their newNodeJoined remote method.
+	public void notifyOthers() {
+		try {
+			// Inform the other nodes that you have joined the network by
+			// calling their newNodeJoined remote method.
 			String[] connectedNodes = this.registry.list();
 			for (String nodeName : connectedNodes) {
 				NodeInterface remoteNode = getRemoteNode(nodeName);
@@ -48,39 +47,41 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 			System.out.println("Kaboom: " + e);
 		}
 	}
-	
+
 	private void startAlgorithm() {
 		// The test algorithm does the following:
 		// 1. Gets the list of all the registered nodes.
-		// 2. Iterates through the list and sends a 'Hello' message to each node.
+		// 2. Iterates through the list and sends a 'Hello' message to each
+		// node.
 		final NodeImplementation currentNode = this;
-		
+
 		new Thread(new Runnable() {
-		    public void run() {
-	    		try {
-	    			// Get the list of registered nodes.
-			    	String[] remoteIds = currentNode.registry.list();
-			    	// Send the messages until death.
-			    	while (true) {
-				    	for (String nodeStringId : remoteIds) {
+			public void run() {
+				try {
+					// Get the list of registered nodes.
+					String[] remoteIds = currentNode.registry.list();
+					// Send the messages until death.
+					while (true) {
+						for (String nodeStringId : remoteIds) {
 							NodeInterface remoteNode = currentNode.getRemoteNode(nodeStringId);
 							remoteNode.passMessage("Hello there!", Integer.toString(currentNode.nodePort));
-				    	}
-				    	// Sleep a bit.
-				    	Thread.sleep(500);
-			    	}
+						}
+						// Sleep a bit.
+						Thread.sleep(500);
+					}
 				} catch (Exception e) {
 					System.out.println("Waboom: " + e);
 				}
-    		}
-	    }).start();
+			}
+		}).start();
 	}
-	
-	private NodeInterface getRemoteNode(String nodeStringId) throws AccessException, RemoteException, NotBoundException {
+
+	private NodeInterface getRemoteNode(String nodeStringId)
+			throws AccessException, RemoteException, NotBoundException {
 		NodeInterface remoteNode = (NodeInterface) this.registry.lookup(nodeStringId);
 		return remoteNode;
 	}
-	
+
 	public void newNodeJoined() {
 		// Increase the counter of the nodes already in the network.
 		nodesJoined++;
@@ -88,8 +89,96 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 		if (nodesJoined - 1 == expectedNetworkSize)
 			startAlgorithm();
 	}
-	
-	public void passMessage(String message, String nodeId) {
-		System.out.println(String.format("Node %s says \"%s\".", nodeId, message));
+
+	ArrayList<int[]> messages = new ArrayList<int[]>();
+	int acksReceived;
+
+	// if ID is me then we received an ackknowledgement else we will store
+	// message for later
+	public void passMessage(int level, int id) {
+
+		System.out.println(String.format("Node %s says, I am on level  \"%s\".", id, level));
+		if (id == this.id) {
+			acksReceived++;
+		} else
+			messages.add(new int[] { level, id });
+	}
+
+	ArrayList<Integer> nodedIDs;
+
+	private void prepareList() {
+		nodedIDs = new ArrayList<Integer>();
+		for (int i = 0; i < expectedNetworkSize; i++) {
+			nodedIDs.add(i);
+		}
+		Collections.shuffle(nodedIDs);
+	}
+
+	// first half round of the algorithm
+	// send m messages nodes not already messages
+	// and still alive
+	int alreadySend = 0;
+
+	public void evenRound() throws Exception {
+		if (alreadySend != acksReceived)
+			stillAlive = false;
+		if (!stillAlive)
+			return;
+		if (nodedIDs == null)
+			prepareList();
+		int[] ids = new int[(int) Math.pow(2, roundNumber / 2)];
+		for (int i = 0; i < Math.pow(2, roundNumber / 2); i++) {
+			ids[i] = nodedIDs.get(alreadySend);
+			alreadySend++;
+		}
+		sendMessages(roundNumber, id, ids);
+
+	}
+
+	// Second half round of the algorithm
+	// Recieve messages if messages send are not equal of received, kill oneself
+	int bestID = id;
+
+	public void oddRound() throws Exception {
+
+		for (int[] message : messages) {
+			if (roundNumber < message[0]) {
+				stillAlive = false;
+				roundNumber = message[0] + 1;
+				bestID = message[1];
+			} else {
+				if (bestID < message[1] && roundNumber - 1 == message[0]) {
+					bestID = message[1];
+				}
+			}
+
+		}
+		if (bestID != id) {
+			sendMessages(roundNumber, bestID, new int[] { bestID });
+		}
+	}
+
+	// Execute even or odd round depending on round number
+	public void round() throws Exception {
+		if (roundNumber % 2 == 0) {
+			evenRound();
+		} else {
+			oddRound();
+		}
+		roundNumber++;
+	}
+
+	// Sends a message with level and number to every Node in IDList
+	public void sendMessages(int level, int number, int[] IDList) throws Exception {
+		final NodeImplementation currentNode = this;
+		String[] remoteIds = currentNode.registry.list();
+		for (int i = 0; i < IDList.length; i++) {
+			if (IDList[i] == id)
+				continue;
+			String nodeStringId = remoteIds[IDList[i]];
+			NodeInterface remoteNode = currentNode.getRemoteNode(nodeStringId);
+			remoteNode.passMessage(level, number);
+
+		}
 	}
 }
