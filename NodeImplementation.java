@@ -16,8 +16,10 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 	private Registry registry;
 	int nodesJoined;
 	int roundNumber;
-	int id;
+	int id = 7;
 	boolean stillAlive = true;
+	int bestID = -1;
+	int bestLevel = -1;
 
 	protected NodeImplementation(int registryPort, int nodePort, int expectedNetworkSize) throws RemoteException {
 		super();
@@ -44,41 +46,35 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 				System.out.println("Notified node: " + nodeName);
 				nodesJoined++;
 			}
-			id = nodesJoined - 2;
+			id = nodesJoined - 2; // the node own id is the number of nodes
+									// joind -2, because it starts at 0
+			bestID = id;
 			System.out.println("My nodeID is: " + id); // extra print for
 														// debugging
 			if (nodesJoined - 1 == expectedNetworkSize)
-				startAlgorithm();
+				startAlgorithm(); // algorithm is started if number of nodes
+									// joined is reached
 		} catch (Exception e) {
 			System.out.println("Kaboom: " + e);
 		}
 	}
 
-	private void startAlgorithm() {
+	private void startAlgorithm() throws Exception {
 		// The test algorithm does the following:
 		// 1. Gets the list of all the registered nodes.
 		// 2. Iterates through the list and sends a 'Hello' message to each
 		// node.
 		final NodeImplementation currentNode = this;
-
-		new Thread(new Runnable() {
-			public void run() {
-				try {
-					// Get the list of registered nodes.
-					// String[] remoteIds = currentNode.registry.list();
-					// Send the messages until death.
-					while (true) {
-						long time = System.currentTimeMillis();
-						Thread.sleep((time + (id * 500)) % 8000);
-
-						round();
-					}
-				} catch (Exception e) {
-					System.out.println("Waboom: " + e);
-					e.printStackTrace();
+		bestID = id;
+		if (this.id == 0)
+			while (true) {
+				String[] connectedNodes = this.registry.list();
+				for (String nodeName : connectedNodes) {
+					NodeInterface remoteNode = getRemoteNode(nodeName);
+					remoteNode.round();
 				}
+				Thread.sleep(1000);
 			}
-		}).start();
 	}
 
 	private NodeInterface getRemoteNode(String nodeStringId)
@@ -87,20 +83,21 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 		return remoteNode;
 	}
 
-	public void newNodeJoined() {
+	public void newNodeJoined() throws Exception {
 		// Increase the counter of the nodes already in the network.
 		nodesJoined++;
 		// Start the algorithm if enough nodes have joined the network.
 		if (nodesJoined - 1 == expectedNetworkSize)
-			startAlgorithm();
+			startAlgorithm(); // algorithm is started if the last node joined
 	}
 
-	ArrayList<int[]> messages = new ArrayList<int[]>();
-	int acksReceived;
+	ArrayList<int[]> messages = new ArrayList<int[]>(); // arraylist of messages
+	int acksReceived; // number of acknoledgments received
 
-	// if ID is me then we received an ackknowledgement else we will store
+	// if ID is me then we received an acknowledgement else we will store
 	// message for later
 	public void passMessage(int level, int id) {
+		System.out.println("passed message: " + id);
 		if (id == this.id) {
 			acksReceived++;
 			System.out.println("I was acknowledged!!!");
@@ -108,8 +105,10 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 			messages.add(new int[] { level, id });
 	}
 
-	ArrayList<Integer> nodedIDs;
+	ArrayList<Integer> nodedIDs; // Arraylist with al the nodeID's
 
+	// fills the ArrayList nodeIDs and shuffles it
+	// so we have a random list of the nodes to send meassages to
 	private void prepareList() {
 		nodedIDs = new ArrayList<Integer>();
 		for (int i = 0; i < expectedNetworkSize; i++) {
@@ -124,21 +123,31 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 	// first half round of the algorithm
 	// send m messages nodes not already messages
 	// and still alive
-	int alreadySend = 0;
+	int alreadySend = 0; // number wich keep track of where we are in NodeIDs
 
 	public void evenRound() throws Exception {
 		System.out.println("received: " + acksReceived + " acks" + " and alive = " + stillAlive);
+		// This checks if this node is elected, because then I would have
+		// received all
+		// the acknolegements.
+		// BUT WHY the -1?
 		if (acksReceived == expectedNetworkSize - 1) {
 			stillAlive = false;
 			System.out.print("I am elected!!");
 		}
 
+		// If this node did not receive an acknowledgement last round, it is
+		// killed
 		if (alreadySend != acksReceived)
 			stillAlive = false;
+		// If it is killed, it returns
 		if (!stillAlive)
 			return;
+		// if nodeIDs does not exist, it makes a nodeIDs list
 		if (nodedIDs == null)
 			prepareList();
+		// this filles a list ids with the ids from nodeIDs, from the
+		// already send + 1 till the 2^roundnumber/2 id in this list.
 		ArrayList<Integer> ids = new ArrayList<Integer>();
 		for (int i = 0; i < Math.pow(2, roundNumber / 2); i++) {
 			try {
@@ -149,25 +158,28 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 			alreadySend++;
 		}
 		Integer[] a = new Integer[ids.size()];
+		System.out.println("send claim to " + Arrays.toString(a));
 		ids.toArray(a);
-		sendMessages(roundNumber, id, a);
+		sendMessages(roundNumber, id, a); // sends a message with roundnumber,
+											// own id , and the list of nodes.
 
 	}
 
 	// Second half round of the algorithm
 	// Recieve messages if messages send are not equal of received, kill oneself
-	int bestID = -1;
 
 	public void oddRound() throws Exception {
 		boolean newbest = false;
-		bestID = Math.max(bestID, id);
-
+		bestID = Math.max(bestID, id); // own id is best id
+		ArrayList<int[]> readMessages = new ArrayList<int[]>();
 		for (int[] message : messages) {
+			readMessages.add(message);
 			/*
 			 * if (roundNumber < message[0]) { stillAlive = false; roundNumber =
 			 * message[0] + 1; bestID = message[1]; newbest = true; } else {
 			 */
 			System.out.println("reading " + Arrays.toString(message));
+			// selecting the best id, if it is lower then current best id.
 			if (bestID < message[1]) {// && roundNumber - 1 == message[0]) {
 				bestID = message[1];
 				newbest = true;
@@ -179,12 +191,53 @@ public class NodeImplementation extends UnicastRemoteObject implements NodeInter
 			stillAlive = false;
 			System.out.println("ack send to " + bestID);
 		}
-		messages = new ArrayList<int[]>();
 		System.out.println("bestID = " + bestID);
+		for (int[] mes : readMessages) {
+			messages.remove(mes);
+		}
+		if (messages.size() != 0) {
+			throw new Exception("sync error");
+		}
 	}
+
+	// een tweede poging
+	// public void oddRound() throws Exception {
+	// boolean newbest = false;
+	//
+	// if (stillAlive) {
+	// bestID = Math.max(bestID, id); // iff still alive, o
+	// // own id is compared with best ide
+	// }
+	// for (int[] message : messages) {
+	// /*
+	// * if (roundNumber < message[0]) { stillAlive = false; roundNumber =
+	// * message[0] + 1; bestID = message[1]; newbest = true; } else {
+	// */
+	// System.out.println("reading " + Arrays.toString(message));
+	// // selecting the best id, if it is lower then current best id.
+	// if (message[0] > newLevel) {
+	// newLevel = message[0];
+	// bestID = message[1];
+	// newbest = true;
+	// }
+	//
+	// }
+	// if (newbest) {
+	// sendMessages(roundNumber, bestID, new Integer[] { bestID });
+	// stillAlive = false;
+	// System.out.println("ack send to " + bestID);
+	// }
+	// messages = new ArrayList<int[]>();
+	// System.out.println("bestID = " + bestID);
+	// }
 
 	// Execute even or odd round depending on round number
 	public void round() throws Exception {
+		System.out.println();
+		System.out.println();
+		System.out.println();
+		System.out.println("round number: " + roundNumber);
+
 		if (roundNumber % 2 == 0) {
 			evenRound();
 		} else {
